@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Heart, MessageCircle, Share2, Send, Sun, Moon } from 'lucide-react'
 import {
   getContracts,
   connectWallet,
@@ -9,11 +10,44 @@ import {
 } from './contracts/contractService'
 
 const emptyProfile = { username: '', bio: '', subscriptionPrice: '' }
-const emptyPost = { title: '', content: '', isPremium: false }
+const emptyPost = { title: '', content: '', mediaUrl: '', isPremium: false }
 const defaultTips = {}
+
+function LandingPage({ onConnect, onExplore }) {
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 })
+
+  function handleMouseMove(e) {
+    setMousePos({ x: e.clientX, y: e.clientY })
+  }
+
+  return (
+    <div className="landing-page" onMouseMove={handleMouseMove}>
+      <div 
+        className="mouse-glow" 
+        style={{ left: `${mousePos.x}px`, top: `${mousePos.y}px` }} 
+      />
+      <div className="ambient-bloom bloom-1" />
+      <div className="ambient-bloom bloom-2" />
+      <div className="ambient-bloom bloom-3" />
+      <div className="landing-overlay"></div>
+      <div className="landing-content">
+        <h1 className="landing-title">socionerd</h1>
+        <p className="landing-subtitle">Make stuff, look at stuff, talk about stuff, find your people on-chain.</p>
+        <div className="landing-buttons">
+          <button className="landing-btn primary" onClick={onConnect}>Connect Wallet to Log In</button>
+          <div className="landing-divider">or</div>
+          <button className="landing-btn ghost" onClick={onExplore}>
+             Explore
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const [wallet, setWallet] = useState('')
+  const [showLanding, setShowLanding] = useState(true)
   const [status, setStatus] = useState('Connect MetaMask and switch to the local Anvil chain.')
   const [profileForm, setProfileForm] = useState(emptyProfile)
   const [postForm, setPostForm] = useState(emptyPost)
@@ -21,8 +55,21 @@ function App() {
   const [posts, setPosts] = useState([])
   const [tipAmounts, setTipAmounts] = useState(defaultTips)
   const [handleTip, setHandleTip] = useState({ handle: '', amount: '0.01' })
+  const [commentInputs, setCommentInputs] = useState({})
+  const [showComments, setShowComments] = useState({})
   const [refreshKey, setRefreshKey] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+  const [activeTab, setActiveTab] = useState('feed')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
+
+  useEffect(() => {
+    if (wallet) setShowLanding(false)
+  }, [wallet])
 
   useEffect(() => {
     if (window.ethereum) {
@@ -37,8 +84,10 @@ function App() {
   }, [])
 
   useEffect(() => {
-    loadData()
-  }, [refreshKey])
+    if (!showLanding) {
+      loadData()
+    }
+  }, [refreshKey, showLanding])
 
   const me = useMemo(() => wallet.toLowerCase(), [wallet])
   const currentCreator = creators.find((creator) => creator.address.toLowerCase() === me)
@@ -108,17 +157,35 @@ function App() {
           const canView =
             !post.isPremium ||
             post.creator.toLowerCase() === address.toLowerCase() ||
-            creator?.isSubscribed
+            (creator && creator.isSubscribed)
+
+          const [likeCount, userHasLiked, comments] = await postManager.getPostInteractions(post.id, address)
+          const hydratedComments = await Promise.all(
+            comments.map(async (c) => {
+              const cCreator = creatorResults.find((cr) => cr.address.toLowerCase() === c.author.toLowerCase())
+              return {
+                author: c.author,
+                authorName: (cCreator && cCreator.username) ? `${cCreator.username}.socio` : shortenAddress(c.author),
+                text: c.text,
+                timestamp: new Date(Number(c.timestamp) * 1000).toLocaleString(),
+                isDeleted: c.isDeleted
+              }
+            })
+          )
 
           return {
             id: Number(post.id),
             creator: post.creator,
-            creatorName: creator?.username ? `${creator.username}.socio` : shortenAddress(post.creator),
+            creatorName: (creator && creator.username) ? `${creator.username}.socio` : shortenAddress(post.creator),
             title: post.title,
             content: post.content,
+            mediaUrl: post.mediaUrl,
             isPremium: post.isPremium,
             canView,
-            createdAt: new Date(Number(post.createdAt) * 1000).toLocaleString()
+            createdAt: new Date(Number(post.createdAt) * 1000).toLocaleString(),
+            likeCount,
+            hasLiked: userHasLiked,
+            comments: hydratedComments
           }
         })
       )
@@ -179,12 +246,82 @@ function App() {
     }
   }
 
+  async function handleFileUpload(event) {
+    const file = event.target.files[0]
+    if (!file) return
+    try {
+      setStatus('Uploading media...')
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'file-name': encodeURIComponent(file.name) },
+        body: file
+      })
+      const data = await res.json()
+      setPostForm((prev) => ({ ...prev, mediaUrl: data.url }))
+      setStatus('Media uploaded.')
+    } catch (error) {
+      setStatus('Upload failed: ' + error.message)
+    }
+  }
+
+  async function handleLike(postId) {
+    try {
+      setIsLoading(true)
+      setStatus('Toggling like...')
+      const { postManager } = await getContracts()
+      const tx = await postManager.toggleLike(postId)
+      await tx.wait()
+      loadData()
+    } catch (error) {
+      alert(error.shortMessage || error.message)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  async function handleDeleteComment(postId, commentIndex) {
+    if (!window.confirm("Delete this comment?")) return;
+    try {
+      setStatus('Deleting comment...')
+      const { postManager } = await getContracts()
+      const tx = await postManager.deleteComment(postId, commentIndex)
+      await tx.wait()
+      loadData()
+    } catch (error) {
+      alert(error.shortMessage || error.message)
+    }
+  }
+
+  async function handleComment(postId) {
+    const text = commentInputs[postId]
+    if (!text) return
+    try {
+      setIsLoading(true)
+      setStatus('Adding comment...')
+      const { postManager } = await getContracts()
+      const tx = await postManager.addComment(postId, text)
+      await tx.wait()
+      setCommentInputs((prev) => ({ ...prev, [postId]: '' }))
+      loadData()
+    } catch (error) {
+      alert(error.shortMessage || error.message)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  function handleShare(postId) {
+    const url = `${window.location.origin}/#post-${postId}`
+    navigator.clipboard.writeText(url)
+    alert('Link copied to clipboard!')
+  }
+
   async function createPost(event) {
     event.preventDefault()
     try {
       setStatus('Publishing post...')
       const { postManager } = await getContracts()
-      const tx = await postManager.createPost(postForm.title, postForm.content, postForm.isPremium)
+      const tx = await postManager.createPost(postForm.title, postForm.content, postForm.mediaUrl, postForm.isPremium)
       await tx.wait()
       setPostForm(emptyPost)
       setStatus('Post published.')
@@ -269,6 +406,26 @@ function App() {
     }
   }
 
+  if (showLanding && !wallet) {
+    return (
+      <LandingPage 
+        onConnect={async () => {
+          try {
+            const { address } = await connectWallet()
+            setWallet(address)
+            setShowLanding(false)
+          } catch(err) {
+            alert(err.message)
+          }
+        }} 
+        onExplore={() => { 
+          setActiveTab('explore')
+          setShowLanding(false)
+        }} 
+      />
+    )
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -281,9 +438,9 @@ function App() {
         </div>
 
         <nav className="nav-list">
-          <a href="#feed">Feed</a>
-          <a href="#creators">Creators</a>
-          <a href="#studio">Creator Studio</a>
+          <button className={`nav-btn ${activeTab === 'feed' ? 'active' : ''}`} onClick={() => setActiveTab('feed')}>Feed</button>
+          <button className={`nav-btn ${activeTab === 'explore' ? 'active' : ''}`} onClick={() => setActiveTab('explore')}>Explore</button>
+          <button className={`nav-btn ${activeTab === 'studio' ? 'active' : ''}`} onClick={() => setActiveTab('studio')}>Creator Studio</button>
         </nav>
 
         <div className="sidebar-card">
@@ -304,10 +461,18 @@ function App() {
 
       <main className="main-layout">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Hackathon MVP</p>
+          <div></div>
+          <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+            <button 
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="secondary"
+              style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+              {theme === 'dark' ? 'Light' : 'Dark'}
+            </button>
+            <div className="wallet-chip">{wallet ? wallet : 'Connect MetaMask to begin'}</div>
           </div>
-          <div className="wallet-chip">{wallet ? wallet : 'Connect MetaMask to begin'}</div>
         </header>
 
         <div className="status-bar">{isLoading ? 'Refreshing from chain...' : status}</div>
@@ -316,10 +481,6 @@ function App() {
           <div>
             <p className="eyebrow">For creators</p>
             <h3>Post content, earn tips, and lock premium drops for subscribers.</h3>
-            <p>
-              This version fixes premium access, improves tipping UX, and gives the app a
-              cleaner social-platform feel.
-            </p>
           </div>
           <div className="hero-stats">
             <div>
@@ -337,8 +498,9 @@ function App() {
           </div>
         </section>
 
-        <section id="feed" className="content-grid">
-          <div className="feed-column">
+        <div className="content-container">
+          {activeTab === 'feed' && (
+            <div className="feed-column">
             <div className="section-header">
               <div>
                 <p className="eyebrow">Latest updates</p>
@@ -355,7 +517,7 @@ function App() {
               const mine = post.creator.toLowerCase() === me
 
               return (
-                <article className="post-card" key={post.id}>
+                  <article className="post-card" key={post.id} id={`post-${post.id}`}>
                   <div className="post-header">
                     <div className="avatar-circle">{post.creatorName.slice(0, 2).toUpperCase()}</div>
                     <div>
@@ -370,7 +532,14 @@ function App() {
                   <h3 className="post-title">{post.title}</h3>
 
                   {post.canView ? (
-                    <p className="post-content">{post.content}</p>
+                    <div className="post-body">
+                      <p className="post-content">{post.content}</p>
+                      {post.mediaUrl && (
+                        post.mediaUrl.match(/\.(mp4|webm|ogg)$/i) 
+                          ? <video src={post.mediaUrl} controls className="post-media" style={{ maxWidth: '100%', borderRadius: '8px', marginTop: '12px' }} />
+                          : <img src={post.mediaUrl} alt="Post media" className="post-media" style={{ maxWidth: '100%', borderRadius: '8px', marginTop: '12px' }} />
+                      )}
+                    </div>
                   ) : (
                     <div className="locked-post">
                       <strong>Premium content locked</strong>
@@ -390,12 +559,76 @@ function App() {
                       )}
                     </div>
                   )}
+
+                  <div className="post-interactions">
+                    <button className={`interaction-btn ${post.hasLiked ? 'liked' : ''}`} onClick={() => handleLike(post.id)} disabled={!post.canView}>
+                      <Heart size={18} fill={post.hasLiked ? 'var(--primary-color)' : 'none'} color={post.hasLiked ? 'var(--primary-color)' : 'currentColor'} />
+                      <span>{Number(post.likeCount)}</span>
+                    </button>
+                    <button className="interaction-btn" onClick={() => setShowComments(prev => ({ ...prev, [post.id]: !prev[post.id] }))} disabled={!post.canView}>
+                      <MessageCircle size={18} />
+                      <span>{post.comments.length}</span>
+                    </button>
+                    <button className="interaction-btn share-btn" onClick={() => handleShare(post.id)}>
+                      <Share2 size={18} />
+                      <span>Share</span>
+                    </button>
+                  </div>
+
+                  {showComments[post.id] && (
+                    <div className="comments-section">
+                      <button 
+                        className="close-btn"
+                        onClick={() => setShowComments(prev => ({ ...prev, [post.id]: false }))}
+                        title="Close comments"
+                      >
+                        ✕ Close
+                      </button>
+                      <div className="comments-list">
+                        {post.comments.length === 0 && <p className="empty-text" style={{ fontSize: '14px', color: 'var(--text-muted)', margin: 0 }}>No comments yet. Be the first!</p>}
+                        {post.comments.map((c, idx) => {
+                          if (c.isDeleted) return null;
+                          return (
+                          <div key={idx} className="comment-item">
+                            <strong>{c.authorName}</strong> <span className="timestamp">{c.timestamp}</span>
+                            <p>{c.text}</p>
+                            {(mine || c.author.toLowerCase() === me) && (
+                              <button 
+                                className="delete-btn"
+                                onClick={() => handleDeleteComment(post.id, idx)}
+                                title="Delete comment"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                          )
+                        })}
+                      </div>
+                      {post.canView && (
+                        <div className="comment-input-row">
+                          <input 
+                            type="text" 
+                            placeholder="Write a comment..." 
+                            value={commentInputs[post.id] || ''} 
+                            onChange={(e) => setCommentInputs(prev => ({ ...prev, [post.id]: e.target.value }))}
+                            onKeyDown={(e) => e.key === 'Enter' && handleComment(post.id)}
+                          />
+                          <button onClick={() => handleComment(post.id)} style={{ padding: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <Send size={16} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </article>
               )
             })}
-          </div>
+            </div>
+          )}
 
-          <div id="creators" className="side-column">
+          {activeTab === 'explore' && (
+            <div className="explore-column">
             <section className="panel">
               <div className="section-header compact">
                 <div>
@@ -452,7 +685,7 @@ function App() {
                                 type="number"
                                 step="0.001"
                                 min="0.001"
-                                value={tipAmounts[creator.address] ?? '0.01'}
+                                value={tipAmounts[creator.address] || '0.01'}
                                 onChange={(e) =>
                                   setTipAmounts((prev) => ({
                                     ...prev,
@@ -507,8 +740,11 @@ function App() {
                 </div>
               </form>
             </section>
+          </div>
+          )}
 
-            <section id="studio" className="studio-grid">
+          {activeTab === 'studio' && (
+            <div className="studio-grid">
               <form className="panel" onSubmit={registerCreator}>
                 <div className="section-header compact">
                   <div>
@@ -547,8 +783,8 @@ function App() {
                   {currentCreator && (
                     <button 
                       type="button" 
+                      className="danger-btn"
                       onClick={deactivateCreator} 
-                      style={{ background: '#ff4d4f', borderColor: '#ff4d4f', color: 'white' }}
                     >
                       Delete
                     </button>
@@ -578,6 +814,11 @@ function App() {
                   rows="6"
                   required
                 />
+                <div style={{ marginBottom: '12px' }}>
+                  <span style={{ fontSize: '14px', display: 'block', marginBottom: '4px' }}>Upload Media (optional):</span>
+                  <input type="file" accept="image/*,video/*" onChange={handleFileUpload} />
+                  {postForm.mediaUrl && <p style={{ fontSize: '12px', color: 'green', marginTop: '4px' }}>Ready: {postForm.mediaUrl}</p>}
+                </div>
                 <label className="checkbox-row">
                   <input
                     type="checkbox"
@@ -588,9 +829,9 @@ function App() {
                 </label>
                 <button type="submit">Publish post</button>
               </form>
-            </section>
-          </div>
-        </section>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   )
