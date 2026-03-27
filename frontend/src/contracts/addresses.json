@@ -1,6 +1,6 @@
 {
   "chainId": 31337,
-  "CreatorRegistry": "0x5f3f1dBD7B74C6B46e8c44f98792A1dAf8d69154",
-  "SubscriptionManager": "0xb7278A61aa25c888815aFC32Ad3cC52fF24fE575",
-  "PostManager": "0xCD8a1C3ba11CF5ECfa6267617243239504a98d90"
+  "CreatorRegistry": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "SubscriptionManager": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+  "PostManager": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
 }
